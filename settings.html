@@ -1,16 +1,4 @@
-<div class="pso-settings-panel">
-  <details class="pso-settings-section">
-    <summary>설정 펼치기</summary>
-    <div class="pso-settings-body">
-      <p class="pso-hint">플러그인 카드를 위·아래로 이동하고 설정 화면에서 숨길 수 있습니다.</p>
-      <div class="pso-order-list" data-role="plugin-order-list"></div>
-      <input type="hidden" name="PLUGIN_ORDER" data-role="plugin-order">
-      <input type="hidden" name="HIDDEN_PLUGINS" data-role="hidden-plugins">
-      <div class="pso-actions">
-        <button type="button" class="pso-reset-button" data-action="reset-order" title="기본 순서로 초기화">
-          <i class="fa-solid fa-arrow-rotate-left"></i><span>기본 순서</span>
-        </button>
-      </div>
-    </div>
-  </details>
+<div class="pso-settings-bridge" data-role="plugin-order-bridge" aria-hidden="true">
+  <input type="hidden" name="PLUGIN_ORDER" data-role="plugin-order">
+  <input type="hidden" name="HIDDEN_PLUGINS" data-role="hidden-plugins">
 </div>

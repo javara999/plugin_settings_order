@@ -1,23 +1,20 @@
 (() => {
-  const listRoot = root.querySelector('[data-role="plugin-order-list"]');
   const form = root.closest('form');
   const orderInput = form && form.querySelector('[data-role="plugin-order"]');
   const hiddenInput = form && form.querySelector('[data-role="hidden-plugins"]');
-  if (!listRoot || !form || !orderInput || !hiddenInput) return;
+  const container = document.getElementById('settings-plugins-container');
+  if (!form || !orderInput || !hiddenInput || !container) return;
+
+  const previous = container.__psoDndController;
+  if (previous && typeof previous.destroy === 'function') previous.destroy();
 
   const ownId = pluginId;
-  const escapeHtml = (value) => String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-  const cards = () => Array.from(document.querySelectorAll('#settings-plugins-container .plugin-config-form'))
+  const cardSelector = '.plugin-settings-card, .plugin-card';
+  const getCards = () => Array.from(container.querySelectorAll('.plugin-config-form'))
     .map((pluginForm) => {
       const id = pluginForm.dataset.pluginId;
-      const card = pluginForm.closest('.plugin-card');
-      const title = card && card.querySelector('h4');
-      return id && card ? { id, card, name: (title && title.textContent.trim()) || id } : null;
+      const card = pluginForm.closest(cardSelector);
+      return id && card ? { id, card } : null;
     })
     .filter((item) => item && item.id !== ownId);
 
@@ -32,84 +29,205 @@
     return text.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
   };
 
-  const available = cards();
+  const available = getCards();
   const availableIds = available.map((item) => item.id);
-  const initialOrder = availableIds.slice();
-  const configuredOrder = parseList(config.PLUGIN_ORDER);
-  let order = [...new Set(configuredOrder.filter((id) => availableIds.includes(id)))];
+  let order = [...new Set(parseList(config.PLUGIN_ORDER).filter((id) => availableIds.includes(id)))];
   order.push(...availableIds.filter((id) => !order.includes(id)));
   let hidden = new Set(parseList(config.HIDDEN_PLUGINS).filter((id) => availableIds.includes(id)));
+  let draggedCard = null;
+  let saveTimer = null;
+  let wasDragging = false;
+
+  const ownCard = form.closest(cardSelector);
+  const oldToolbar = container.querySelector('[data-pso-hidden-toolbar]');
+  if (oldToolbar) oldToolbar.remove();
+  const hiddenToolbar = document.createElement('div');
+  hiddenToolbar.className = 'pso-hidden-toolbar';
+  hiddenToolbar.dataset.psoHiddenToolbar = '1';
+  container.insertBefore(hiddenToolbar, container.firstChild);
+
+  const cardName = (card, fallback) => {
+    const heading = card.querySelector('h4');
+    if (!heading) return fallback;
+    const text = Array.from(heading.childNodes)
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent.trim())
+      .filter(Boolean)
+      .join(' ');
+    return text || heading.textContent.trim() || fallback;
+  };
 
   const writeConfigInputs = () => {
     orderInput.value = JSON.stringify(order);
     hiddenInput.value = JSON.stringify(order.filter((id) => hidden.has(id)));
   };
 
-  const applyCards = () => {
-    const current = cards();
-    const byId = new Map(current.map((item) => [item.id, item]));
-    const parent = current[0] && current[0].card.parentElement;
-    if (!parent) return;
-    order.forEach((id) => {
-      const item = byId.get(id);
-      if (item) parent.appendChild(item.card);
-    });
-    current.forEach((item) => {
-      item.card.style.display = hidden.has(item.id) ? 'none' : '';
-    });
-    const ownCard = form.closest('.plugin-card');
-    if (ownCard) parent.appendChild(ownCard);
-  };
-
-  const render = () => {
-    const byId = new Map(cards().map((item) => [item.id, item]));
-    listRoot.innerHTML = order.map((id, index) => {
-      const item = byId.get(id);
-      if (!item) return '';
-      const isHidden = hidden.has(id);
-      return `
-        <div class="pso-order-item${isHidden ? ' pso-hidden' : ''}" data-plugin-id="${id}">
-          <span class="pso-order-name">${escapeHtml(item.name)}<span class="pso-order-id">${escapeHtml(id)}</span></span>
-          <button type="button" class="pso-order-button" data-action="move-up" title="위로 이동" ${index === 0 ? 'disabled' : ''}><i class="fa-solid fa-chevron-up"></i></button>
-          <button type="button" class="pso-order-button" data-action="move-down" title="아래로 이동" ${index === order.length - 1 ? 'disabled' : ''}><i class="fa-solid fa-chevron-down"></i></button>
-          <label class="pso-hide-control"><input type="checkbox" data-action="toggle-hidden" ${isHidden ? 'checked' : ''}>숨기기</label>
-        </div>`;
-    }).join('');
-    writeConfigInputs();
-    applyCards();
-  };
-
-  listRoot.addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-action]');
-    if (!button) return;
-    const item = button.closest('[data-plugin-id]');
-    const index = item ? order.indexOf(item.dataset.pluginId) : -1;
-    if (index < 0) return;
-    if (button.dataset.action === 'move-up' && index > 0) {
-      [order[index - 1], order[index]] = [order[index], order[index - 1]];
-    } else if (button.dataset.action === 'move-down' && index < order.length - 1) {
-      [order[index + 1], order[index]] = [order[index], order[index + 1]];
-    } else {
+  const renderHiddenToolbar = () => {
+    hiddenToolbar.replaceChildren();
+    if (!hidden.size) {
+      hiddenToolbar.style.display = 'none';
       return;
     }
-    render();
-  });
+    hiddenToolbar.style.display = 'flex';
+    const label = document.createElement('span');
+    label.className = 'pso-hidden-label';
+    label.textContent = '숨긴 플러그인';
+    hiddenToolbar.appendChild(label);
+    const byId = new Map(getCards().map((item) => [item.id, item]));
+    hidden.forEach((id) => {
+      const item = byId.get(id);
+      if (!item) return;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'pso-show-button';
+      button.dataset.psoAction = 'show';
+      button.dataset.psoPluginId = id;
+      button.title = `${cardName(item.card, id)} 표시`;
+      button.innerHTML = '<i class="fa-solid fa-eye"></i>';
+      button.append(document.createTextNode(` ${cardName(item.card, id)}`));
+      hiddenToolbar.appendChild(button);
+    });
+  };
 
-  listRoot.addEventListener('change', (event) => {
-    if (event.target.dataset.action !== 'toggle-hidden') return;
-    const item = event.target.closest('[data-plugin-id]');
-    if (!item) return;
-    if (event.target.checked) hidden.add(item.dataset.pluginId);
-    else hidden.delete(item.dataset.pluginId);
-    render();
-  });
+  const applyCards = () => {
+    const current = getCards();
+    const byId = new Map(current.map((item) => [item.id, item.card]));
+    order = order.filter((id) => byId.has(id));
+    current.forEach((item) => {
+      if (!order.includes(item.id)) order.push(item.id);
+      item.card.dataset.psoPluginId = item.id;
+      item.card.draggable = true;
+      item.card.style.display = hidden.has(item.id) ? 'none' : '';
+      if (!item.card.querySelector('[data-pso-action="hide"]')) {
+        const toggleZone = item.card.querySelector('[data-role="plugin-toggle-zone"]');
+        if (toggleZone) {
+          const hideButton = document.createElement('button');
+          hideButton.type = 'button';
+          hideButton.className = 'pso-hide-button';
+          hideButton.dataset.psoAction = 'hide';
+          hideButton.dataset.psoPluginId = item.id;
+          hideButton.title = '이 플러그인 설정 카드 숨기기';
+          hideButton.innerHTML = '<i class="fa-solid fa-eye-slash"></i>';
+          toggleZone.prepend(hideButton);
+        }
+      }
+    });
+    order.forEach((id) => {
+      const card = byId.get(id);
+      if (card) container.appendChild(card);
+    });
+    if (ownCard) container.appendChild(ownCard);
+    writeConfigInputs();
+    renderHiddenToolbar();
+  };
 
-  const resetButton = root.querySelector('[data-action="reset-order"]');
-  if (resetButton) resetButton.addEventListener('click', () => {
-    order = initialOrder.slice();
-    hidden.clear();
-    render();
-  });
+  const saveOrder = () => {
+    writeConfigInputs();
+    if (saveTimer) window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => {
+      saveTimer = null;
+      if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    }, 120);
+  };
 
-  render();
+  const clearDragState = () => {
+    getCards().forEach(({ card }) => card.classList.remove('pso-dragging', 'pso-drop-target'));
+  };
+
+  const setupOwnCard = () => {
+    if (!ownCard) return;
+    const body = ownCard.querySelector('[data-plugin-body]');
+    const header = ownCard.querySelector('[data-role="plugin-card-toggle"]');
+    const chevron = ownCard.querySelector('[data-plugin-chevron]');
+    const badge = ownCard.querySelector('h4 span');
+    if (body) body.style.display = 'none';
+    if (chevron) chevron.remove();
+    if (badge && badge.textContent.trim() === '설정 있음') badge.remove();
+    if (header) {
+      header.style.cursor = 'default';
+      header.addEventListener('click', (event) => {
+        if (!event.target.closest('[data-role="plugin-toggle-zone"]')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      }, true);
+    }
+    const submit = ownCard.querySelector('button[type="submit"]');
+    if (submit) submit.style.display = 'none';
+  };
+
+  const onClick = (event) => {
+    const actionElement = event.target.closest('[data-pso-action]');
+    if (!actionElement) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const id = actionElement.dataset.psoPluginId;
+    if (!id) return;
+    if (actionElement.dataset.psoAction === 'hide') hidden.add(id);
+    if (actionElement.dataset.psoAction === 'show') hidden.delete(id);
+    applyCards();
+    saveOrder();
+  };
+
+  const onDragStart = (event) => {
+    const card = event.target.closest('[data-pso-plugin-id]');
+    if (!card || hidden.has(card.dataset.psoPluginId)) return;
+    draggedCard = card;
+    wasDragging = true;
+    card.classList.add('pso-dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', card.dataset.psoPluginId);
+  };
+
+  const onDragOver = (event) => {
+    const card = event.target.closest('[data-pso-plugin-id]');
+    if (!draggedCard || !card || draggedCard === card || hidden.has(card.dataset.psoPluginId)) return;
+    event.preventDefault();
+    clearDragState();
+    card.classList.add('pso-drop-target');
+    const box = card.getBoundingClientRect();
+    const insertAfter = event.clientY > box.top + box.height / 2;
+    container.insertBefore(draggedCard, insertAfter ? card.nextSibling : card);
+  };
+
+  const onDrop = (event) => {
+    if (!draggedCard) return;
+    event.preventDefault();
+    applyCards();
+    saveOrder();
+  };
+
+  const onDragEnd = () => {
+    draggedCard = null;
+    clearDragState();
+    window.setTimeout(() => { wasDragging = false; }, 0);
+  };
+
+  const onClickCapture = (event) => {
+    if (wasDragging && !event.target.closest('[data-pso-action]')) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+
+  const listeners = [
+    ['click', onClick, false],
+    ['dragstart', onDragStart, false],
+    ['dragover', onDragOver, false],
+    ['drop', onDrop, false],
+    ['dragend', onDragEnd, false],
+    ['click', onClickCapture, true],
+  ];
+  listeners.forEach(([type, handler, capture]) => container.addEventListener(type, handler, capture));
+  container.__psoDndController = {
+    destroy() {
+      listeners.forEach(([type, handler, capture]) => container.removeEventListener(type, handler, capture));
+      if (saveTimer) window.clearTimeout(saveTimer);
+      delete container.__psoDndController;
+    },
+  };
+
+  setupOwnCard();
+  applyCards();
 })();
