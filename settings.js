@@ -8,15 +8,13 @@
   const previous = container.__psoDndController;
   if (previous && typeof previous.destroy === 'function') previous.destroy();
 
-  const ownId = pluginId;
   const cardSelector = '.plugin-settings-card, .plugin-card';
   const getCards = () => Array.from(container.querySelectorAll('.plugin-config-form'))
     .map((pluginForm) => {
       const id = pluginForm.dataset.pluginId;
       const card = pluginForm.closest(cardSelector);
       return id && card ? { id, card } : null;
-    })
-    .filter((item) => item && item.id !== ownId);
+    });
 
   const parseList = (value) => {
     if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
@@ -116,7 +114,6 @@
       const card = byId.get(id);
       if (card) container.appendChild(card);
     });
-    if (ownCard) container.appendChild(ownCard);
     writeConfigInputs();
     renderHiddenToolbar();
   };

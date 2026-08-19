@@ -2,7 +2,7 @@
 from plugins.metadata.base import BaseMetadataProvider
 
 
-PLUGIN_VERSION = "1.1.0"
+PLUGIN_VERSION = "1.1.1"
 
 
 class PluginSettingsOrderProvider(BaseMetadataProvider):
