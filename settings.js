@@ -187,7 +187,10 @@
     saveBusy = true;
     writeConfigInputs();
     try {
-      const response = await fetch('/api/media/metadata/plugins/save-config', {
+      const fetchConfig = typeof window.__origFetchForPluginsViewer === 'function'
+        ? window.__origFetchForPluginsViewer.bind(window)
+        : window.fetch.bind(window);
+      const response = await fetchConfig('/api/media/metadata/plugins/save-config', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
