@@ -14,7 +14,8 @@
       const id = pluginForm.dataset.pluginId;
       const card = pluginForm.closest(cardSelector);
       return id && card ? { id, card } : null;
-    });
+    })
+    .filter(Boolean);
 
   const parseList = (value) => {
     if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
@@ -35,6 +36,7 @@
   let draggedCard = null;
   let saveTimer = null;
   let wasDragging = false;
+  const displayByCard = new WeakMap();
 
   const ownCard = form.closest(cardSelector);
   const oldToolbar = container.querySelector('[data-pso-hidden-toolbar]');
@@ -62,7 +64,9 @@
 
   const renderHiddenToolbar = () => {
     hiddenToolbar.replaceChildren();
-    if (!hidden.size) {
+    const byId = new Map(getCards().map((item) => [item.id, item]));
+    const hiddenIds = [...hidden].filter((id) => byId.has(id));
+    if (!hiddenIds.length) {
       hiddenToolbar.style.display = 'none';
       return;
     }
@@ -71,8 +75,7 @@
     label.className = 'pso-hidden-label';
     label.textContent = '숨긴 플러그인';
     hiddenToolbar.appendChild(label);
-    const byId = new Map(getCards().map((item) => [item.id, item]));
-    hidden.forEach((id) => {
+    hiddenIds.forEach((id) => {
       const item = byId.get(id);
       if (!item) return;
       const button = document.createElement('button');
@@ -95,7 +98,12 @@
       if (!order.includes(item.id)) order.push(item.id);
       item.card.dataset.psoPluginId = item.id;
       item.card.draggable = true;
-      item.card.style.display = hidden.has(item.id) ? 'none' : '';
+      if (!displayByCard.has(item.card)) {
+        const display = item.card.style.display;
+        displayByCard.set(item.card, display && display !== 'none' ? display : 'flex');
+      }
+      item.card.style.display = displayByCard.get(item.card);
+      item.card.hidden = hidden.has(item.id);
       if (!item.card.querySelector('[data-pso-action="hide"]')) {
         const toggleZone = item.card.querySelector('[data-role="plugin-toggle-zone"]');
         if (toggleZone) {
@@ -127,6 +135,38 @@
       else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     }, 120);
   };
+
+  let saveBusy = false;
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (saveBusy) return;
+    saveBusy = true;
+    writeConfigInputs();
+    try {
+      const response = await fetch('/api/media/metadata/plugins/save-config', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'general',
+          plugin_id: pluginId,
+          config: {
+            PLUGIN_ORDER: orderInput.value,
+            HIDDEN_PLUGINS: hiddenInput.value,
+          },
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.success === false) throw new Error(payload.error || '플러그인 설정 저장에 실패했습니다.');
+      if (typeof window.showToast === 'function') window.showToast(payload.message || '플러그인 설정을 저장했습니다.', 'success');
+    } catch (error) {
+      console.error('[PluginSettingsOrder] 설정 저장 실패:', error);
+      if (typeof window.showToast === 'function') window.showToast(error.message || '플러그인 설정 저장에 실패했습니다.', 'error');
+    } finally {
+      saveBusy = false;
+    }
+  }, true);
 
   const clearDragState = () => {
     getCards().forEach(({ card }) => card.classList.remove('pso-dragging', 'pso-drop-target'));

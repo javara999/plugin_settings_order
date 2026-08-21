@@ -1,6 +1,7 @@
 .plugin-settings-card[data-pso-plugin-id], .plugin-card[data-pso-plugin-id] { cursor: grab; transition: opacity 0.15s ease, border-color 0.15s ease, transform 0.15s ease; }
 .plugin-settings-card[data-pso-plugin-id] .plugin-settings-card-header, .plugin-card[data-pso-plugin-id] .plugin-settings-card-header { cursor: grab !important; }
 .plugin-settings-card[data-pso-plugin-id]:active, .plugin-card[data-pso-plugin-id]:active { cursor: grabbing; }
+.plugin-settings-card[data-pso-plugin-id][hidden], .plugin-card[data-pso-plugin-id][hidden] { display: none !important; }
 .plugin-settings-card.pso-dragging, .plugin-card.pso-dragging { opacity: 0.45; }
 .plugin-settings-card.pso-drop-target, .plugin-card.pso-drop-target { border-color: #a855f7 !important; box-shadow: 0 0 0 1px rgba(168,85,247,0.45); }
 .pso-settings-bridge { display: none !important; }
