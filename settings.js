@@ -102,8 +102,13 @@
         const display = item.card.style.display;
         displayByCard.set(item.card, display && display !== 'none' ? display : 'flex');
       }
-      item.card.style.display = displayByCard.get(item.card);
-      item.card.hidden = hidden.has(item.id);
+      const isHidden = hidden.has(item.id);
+      item.card.hidden = isHidden;
+      if (isHidden) {
+        item.card.style.setProperty('display', 'none', 'important');
+      } else {
+        item.card.style.setProperty('display', displayByCard.get(item.card));
+      }
       if (!item.card.querySelector('[data-pso-action="hide"]')) {
         const toggleZone = item.card.querySelector('[data-role="plugin-toggle-zone"]');
         if (toggleZone) {
