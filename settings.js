@@ -91,6 +91,51 @@
   let listenersBound = false;
   let reconcileQueued = false;
   const displayByCard = new WeakMap();
+  const viewerDisplayByElement = new WeakMap();
+
+  // Some plugins hide their own navigation entries by querying every
+  // [data-plugin-id] in the document. BookOasis reuses that attribute inside
+  // the plugin settings cards, so such a global query can hide a card header,
+  // form, toggle, or action button while leaving the outer card visible.
+  // Remember the original inline display and repair only elements explicitly
+  // marked by that foreign hide operation. plugin_settings_order's own hidden
+  // cards do not use this marker, so the two mechanisms remain independent.
+  const expectedViewerDisplay = (element) => {
+    if (element.matches('[data-role="plugin-card-toggle"], .plugin-config-form')) return 'flex';
+    if (element.matches('.plugin-sample-update-btn')) return 'inline-flex';
+    return '';
+  };
+
+  const rememberViewerDisplays = () => {
+    container.querySelectorAll('[data-plugin-id]').forEach((element) => {
+      if (!(element instanceof HTMLElement) || viewerDisplayByElement.has(element)) return;
+      const current = element.style.display;
+      if (current && current !== 'none') {
+        viewerDisplayByElement.set(element, current);
+      } else if (!element.hasAttribute('data-hidden-by-plugins-viewer')) {
+        viewerDisplayByElement.set(element, current || '');
+      }
+    });
+  };
+
+  const restoreViewerHiddenElements = () => {
+    let changed = false;
+    container.querySelectorAll('[data-hidden-by-plugins-viewer="1"]').forEach((element) => {
+      if (!(element instanceof HTMLElement)) return;
+      let display = viewerDisplayByElement.get(element);
+      if (display === undefined || display === 'none') display = expectedViewerDisplay(element);
+      if (display) element.style.setProperty('display', display);
+      else element.style.removeProperty('display');
+      element.removeAttribute('data-hidden-by-plugins-viewer');
+      changed = true;
+    });
+    rememberViewerDisplays();
+    return changed;
+  };
+
+  rememberViewerDisplays();
+  restoreViewerHiddenElements();
+
   const ownCard = form.closest(cardSelector);
   const ownToggle = ownCard && ownCard.querySelector('.plugin-toggle-checkbox');
 
@@ -352,6 +397,8 @@
   const activate = () => {
     if (active) return;
     active = true;
+    rememberViewerDisplays();
+    restoreViewerHiddenElements();
     ensureToolbar();
     bindListeners();
     applyCards();
@@ -412,12 +459,27 @@
     if (submit) submit.style.display = 'none';
   };
 
-  const reconcileObserver = new MutationObserver(() => {
-    if (!active || reconcileQueued) return;
+  const reconcileObserver = new MutationObserver((mutations) => {
+    if (!active) return;
+
+    // Repair foreign per-element hiding immediately. MutationObserver runs at
+    // the microtask checkpoint, before the browser's next paint in the normal
+    // rendering flow, preventing the visible-card -> blank-card transition.
+    const viewerHideTouched = mutations.some((mutation) => (
+      mutation.type === 'attributes' &&
+      mutation.target instanceof HTMLElement &&
+      mutation.target.closest('#settings-plugins-container') === container &&
+      mutation.target.getAttribute('data-hidden-by-plugins-viewer') === '1'
+    ));
+    if (viewerHideTouched) restoreViewerHiddenElements();
+
+    // Child-list mutations still need the existing orphan/duplicate cleanup.
+    if (!mutations.some((mutation) => mutation.type === 'childList') || reconcileQueued) return;
     reconcileQueued = true;
     window.queueMicrotask(() => {
       reconcileQueued = false;
       if (!active) return;
+      restoreViewerHiddenElements();
       if (!cleanupOrphanCards()) return;
       const validIds = new Set(getCards().map((item) => item.id));
       order = order.filter((id) => validIds.has(id));
@@ -426,7 +488,12 @@
       renderHiddenToolbar();
     });
   });
-  reconcileObserver.observe(container, { childList: true, subtree: true });
+  reconcileObserver.observe(container, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['data-hidden-by-plugins-viewer', 'style'],
+  });
 
   container.querySelectorAll('[data-pso-hidden-toolbar]').forEach((toolbar) => toolbar.remove());
   getCards().forEach(({ card }) => {
