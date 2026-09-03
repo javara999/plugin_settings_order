@@ -6,13 +6,46 @@
   if (!form || !orderInput || !hiddenInput || !container) return;
 
   const cardSelector = '.plugin-settings-card, .plugin-card';
-  const getCards = () => Array.from(container.querySelectorAll('.plugin-config-form'))
-    .map((pluginForm) => {
-      const id = pluginForm.dataset.pluginId;
-      const card = pluginForm.closest(cardSelector);
-      return id && card ? { id, card } : null;
-    })
-    .filter(Boolean);
+
+  const cardFromTarget = (target) => {
+    if (!(target instanceof Element)) return null;
+    const card = target.closest(cardSelector);
+    return card && card.parentElement === container ? card : null;
+  };
+
+  const cardItem = (card) => {
+    if (!card || card.parentElement !== container) return null;
+    const pluginForm = card.querySelector('.plugin-config-form[data-plugin-id]');
+    const id = pluginForm && String(pluginForm.dataset.pluginId || '').trim();
+    return id ? { id, card } : null;
+  };
+
+  // 순서 변경/숨김을 여러 번 반복하거나 다른 플러그인이 설정 DOM을 다시 그릴 때
+  // 내용이 사라진 카드 shell 또는 같은 plugin-id의 중복 카드가 남을 수 있다.
+  // BookOasis의 실제 플러그인 카드는 항상 header + plugin-config-form을 가지므로
+  // 그 조건을 만족하지 않는 direct child card는 안전하게 제거한다.
+  const cleanupOrphanCards = () => {
+    const seen = new Set();
+    let changed = false;
+    Array.from(container.children).forEach((node) => {
+      if (!(node instanceof Element) || !node.matches(cardSelector)) return;
+      const item = cardItem(node);
+      const hasHeader = !!node.querySelector('[data-role="plugin-card-toggle"]');
+      if (!item || !hasHeader || seen.has(item.id)) {
+        console.warn('[PluginSettingsOrder] stale/blank plugin card removed', item && item.id);
+        node.remove();
+        changed = true;
+        return;
+      }
+      seen.add(item.id);
+    });
+    return changed;
+  };
+
+  const getCards = () => {
+    cleanupOrphanCards();
+    return Array.from(container.children).map(cardItem).filter(Boolean);
+  };
 
   const previous = container.__psoDndController;
   const inheritedDefaultOrder = previous && Array.isArray(previous.defaultOrder)
@@ -46,6 +79,7 @@
   let wasDragging = false;
   let hiddenToolbar = null;
   let listenersBound = false;
+  let reconcileQueued = false;
   const displayByCard = new WeakMap();
   const ownCard = form.closest(cardSelector);
   const ownToggle = ownCard && ownCard.querySelector('.plugin-toggle-checkbox');
@@ -228,9 +262,9 @@
   };
 
   const onDragStart = (event) => {
-    if (!active) return;
-    const card = event.target.closest('[data-pso-plugin-id]');
-    if (!card || hidden.has(card.dataset.psoPluginId)) return;
+    if (!active || event.target.closest('[data-pso-action], input, button, label, select, textarea')) return;
+    const card = cardFromTarget(event.target);
+    if (!card || !card.dataset.psoPluginId || hidden.has(card.dataset.psoPluginId)) return;
     draggedCard = card;
     wasDragging = true;
     card.classList.add('pso-dragging');
@@ -241,7 +275,7 @@
   };
 
   const onDragOver = (event) => {
-    const card = event.target.closest('[data-pso-plugin-id]');
+    const card = cardFromTarget(event.target);
     if (!active || !draggedCard || !card || draggedCard === card || hidden.has(card.dataset.psoPluginId)) return;
     event.preventDefault();
     clearDragState();
@@ -253,9 +287,8 @@
   const onDrop = (event) => {
     if (!active || !draggedCard) return;
     event.preventDefault();
-    order = Array.from(container.children)
-      .map((card) => card.dataset && card.dataset.psoPluginId)
-      .filter(Boolean);
+    cleanupOrphanCards();
+    order = getCards().map((item) => item.id);
     applyCards();
     saveOrder();
   };
@@ -357,6 +390,22 @@
     if (submit) submit.style.display = 'none';
   };
 
+  const reconcileObserver = new MutationObserver(() => {
+    if (!active || reconcileQueued) return;
+    reconcileQueued = true;
+    window.queueMicrotask(() => {
+      reconcileQueued = false;
+      if (!active) return;
+      if (!cleanupOrphanCards()) return;
+      const validIds = new Set(getCards().map((item) => item.id));
+      order = order.filter((id) => validIds.has(id));
+      hidden = new Set([...hidden].filter((id) => validIds.has(id)));
+      writeConfigInputs();
+      renderHiddenToolbar();
+    });
+  });
+  reconcileObserver.observe(container, { childList: true, subtree: true });
+
   container.querySelectorAll('[data-pso-hidden-toolbar]').forEach((toolbar) => toolbar.remove());
   getCards().forEach(({ card }) => {
     if (card.dataset.psoPluginId || card.querySelector('[data-pso-action="hide"]')) resetCard(card);
@@ -371,6 +420,7 @@
       form.removeEventListener('submit', onSubmit, true);
       if (ownToggle) ownToggle.removeEventListener('change', onOwnToggleChange);
       window.removeEventListener('plugin_manager:plugins_changed', onPluginManagerChanged);
+      reconcileObserver.disconnect();
       if (container.__psoDndController === this) delete container.__psoDndController;
     },
   };
