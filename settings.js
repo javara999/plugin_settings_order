@@ -64,13 +64,23 @@
     return text.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
   };
 
+  const HIDE_ALL_SENTINEL = '__PSO_HIDE_ALL__';
   const availableIds = getCards().map((item) => item.id);
   const defaultOrder = (inheritedDefaultOrder || availableIds)
     .filter((id, index, values) => availableIds.includes(id) && values.indexOf(id) === index);
   defaultOrder.push(...availableIds.filter((id) => !defaultOrder.includes(id)));
   let order = [...new Set(parseList(config.PLUGIN_ORDER).filter((id) => availableIds.includes(id)))];
   order.push(...availableIds.filter((id) => !order.includes(id)));
-  let hidden = new Set(parseList(config.HIDDEN_PLUGINS).filter((id) => availableIds.includes(id)));
+  const configuredHidden = parseList(config.HIDDEN_PLUGINS);
+  let hideAll = configuredHidden.includes(HIDE_ALL_SENTINEL);
+  let hidden = hideAll
+    ? new Set(availableIds)
+    : new Set(configuredHidden.filter((id) => availableIds.includes(id)));
+  // v1.1.8 이전의 "모두 숨김" 상태도 자동으로 hide-all 모드로 승격한다.
+  // 이후 새 플러그인이 설치되어도 빈 카드처럼 다시 노출되지 않는다.
+  if (!hideAll && availableIds.length > 0 && availableIds.every((id) => hidden.has(id))) {
+    hideAll = true;
+  }
 
   let active = false;
   let draggedCard = null;
@@ -125,7 +135,12 @@
 
   const writeConfigInputs = () => {
     orderInput.value = JSON.stringify(order);
-    hiddenInput.value = JSON.stringify(order.filter((id) => hidden.has(id)));
+    const hiddenIds = order.filter((id) => hidden.has(id));
+    hiddenInput.value = JSON.stringify(
+      hideAll && order.length > 0 && hiddenIds.length === order.length
+        ? [HIDE_ALL_SENTINEL]
+        : hiddenIds
+    );
   };
 
   const ensureToolbar = () => {
@@ -172,6 +187,7 @@
     hidden = new Set([...hidden].filter((id) => byId.has(id)));
     current.forEach((item) => {
       if (!order.includes(item.id)) order.push(item.id);
+      if (hideAll) hidden.add(item.id);
       const display = rememberDisplay(item.card);
       item.card.dataset.psoPluginId = item.id;
       item.card.draggable = true;
@@ -255,8 +271,14 @@
     event.stopPropagation();
     const id = actionElement.dataset.psoPluginId;
     if (!id) return;
-    if (actionElement.dataset.psoAction === 'hide') hidden.add(id);
-    if (actionElement.dataset.psoAction === 'show') hidden.delete(id);
+    if (actionElement.dataset.psoAction === 'hide') {
+      hidden.add(id);
+      if (order.length > 0 && order.every((pluginId) => hidden.has(pluginId))) hideAll = true;
+    }
+    if (actionElement.dataset.psoAction === 'show') {
+      hideAll = false;
+      hidden.delete(id);
+    }
     applyCards();
     saveOrder();
   };
