@@ -20,10 +20,6 @@
     return id ? { id, card } : null;
   };
 
-  // 순서 변경/숨김을 여러 번 반복하거나 다른 플러그인이 설정 DOM을 다시 그릴 때
-  // 내용이 사라진 카드 shell 또는 같은 plugin-id의 중복 카드가 남을 수 있다.
-  // BookOasis의 실제 플러그인 카드는 항상 header + plugin-config-form을 가지므로
-  // 그 조건을 만족하지 않는 direct child card는 안전하게 제거한다.
   const cleanupOrphanCards = () => {
     const seen = new Set();
     let changed = false;
@@ -76,14 +72,13 @@
   let hidden = hideAll
     ? new Set(availableIds)
     : new Set(configuredHidden.filter((id) => availableIds.includes(id)));
-  // v1.1.8 이전의 "모두 숨김" 상태도 자동으로 hide-all 모드로 승격한다.
-  // 이후 새 플러그인이 설치되어도 빈 카드처럼 다시 노출되지 않는다.
   if (!hideAll && availableIds.length > 0 && availableIds.every((id) => hidden.has(id))) {
     hideAll = true;
   }
 
   let active = false;
   let draggedCard = null;
+  let dragStartOrderKey = null;
   let saveBusy = false;
   let saveQueued = false;
   let saveScheduled = false;
@@ -95,13 +90,6 @@
   const displayByCard = new WeakMap();
   const viewerDisplayByElement = new WeakMap();
 
-  // Some plugins hide their own navigation entries by querying every
-  // [data-plugin-id] in the document. BookOasis reuses that attribute inside
-  // the plugin settings cards, so such a global query can hide a card header,
-  // form, toggle, or action button while leaving the outer card visible.
-  // Remember the original inline display and repair only elements explicitly
-  // marked by that foreign hide operation. plugin_settings_order's own hidden
-  // cards do not use this marker, so the two mechanisms remain independent.
   const expectedViewerDisplay = (element) => {
     if (element.matches('[data-role="plugin-card-toggle"], .plugin-config-form')) return 'flex';
     if (element.matches('.plugin-sample-update-btn')) return 'inline-flex';
@@ -199,6 +187,7 @@
   };
 
   const snapshotKey = (snapshot) => JSON.stringify(snapshot);
+  const orderKey = (ids) => JSON.stringify(ids);
 
   const ensureToolbar = () => {
     container.querySelectorAll('[data-pso-hidden-toolbar]').forEach((toolbar) => toolbar.remove());
@@ -301,9 +290,6 @@
     return payload;
   };
 
-  // 이동/숨김 직후 최신 상태를 저장한다. 저장 중 추가 변경이 발생하면 saveQueued가
-  // 다시 켜지고, 현재 요청이 끝난 직후 가장 최신 스냅샷을 한 번 더 저장한다.
-  // 따라서 빠른 연속 드래그/숨김에서도 마지막 상태가 유실되지 않는다.
   const drainSaveQueue = async () => {
     if (saveBusy || !saveQueued) return;
     saveBusy = true;
@@ -386,6 +372,7 @@
     const card = cardFromTarget(event.target);
     if (!card || !card.dataset.psoPluginId || hidden.has(card.dataset.psoPluginId)) return;
     draggedCard = card;
+    dragStartOrderKey = orderKey(getCards().map((item) => item.id));
     wasDragging = true;
     card.classList.add('pso-dragging');
     if (event.dataTransfer) {
@@ -399,22 +386,37 @@
     if (!active || !draggedCard || !card || draggedCard === card || hidden.has(card.dataset.psoPluginId)) return;
     event.preventDefault();
     clearDragState();
+    draggedCard.classList.add('pso-dragging');
     card.classList.add('pso-drop-target');
     const box = card.getBoundingClientRect();
     container.insertBefore(draggedCard, event.clientY > box.top + box.height / 2 ? card.nextSibling : card);
   };
 
+  const commitDraggedOrder = () => {
+    cleanupOrphanCards();
+    const domOrder = getCards().map((item) => item.id);
+    const changed = dragStartOrderKey !== null && orderKey(domOrder) !== dragStartOrderKey;
+    order = domOrder;
+    applyCards();
+    if (changed) saveOrder();
+    return changed;
+  };
+
   const onDrop = (event) => {
     if (!active || !draggedCard) return;
     event.preventDefault();
-    cleanupOrphanCards();
-    order = getCards().map((item) => item.id);
-    applyCards();
-    saveOrder();
+    commitDraggedOrder();
+    dragStartOrderKey = orderKey(order);
   };
 
   const onDragEnd = () => {
+    if (active && draggedCard) {
+      // 일부 브라우저/DOM 조합에서는 dragover로 위치가 이동한 뒤 drop이 전달되지 않는다.
+      // plugin_hub와 동일하게 dragend에서도 실제 DOM 위치를 기준으로 최종 순서를 확정한다.
+      commitDraggedOrder();
+    }
     draggedCard = null;
+    dragStartOrderKey = null;
     clearDragState();
     window.setTimeout(() => { wasDragging = false; }, 0);
   };
@@ -460,6 +462,7 @@
   const deactivate = ({ restore = true } = {}) => {
     active = false;
     draggedCard = null;
+    dragStartOrderKey = null;
     wasDragging = false;
     unbindListeners();
     if (hiddenToolbar) hiddenToolbar.remove();
@@ -513,9 +516,6 @@
   const reconcileObserver = new MutationObserver((mutations) => {
     if (!active) return;
 
-    // Repair foreign per-element hiding immediately. MutationObserver runs at
-    // the microtask checkpoint, before the browser's next paint in the normal
-    // rendering flow, preventing the visible-card -> blank-card transition.
     const viewerHideTouched = mutations.some((mutation) => (
       mutation.type === 'attributes' &&
       mutation.target instanceof HTMLElement &&
@@ -524,7 +524,6 @@
     ));
     if (viewerHideTouched) restoreViewerHiddenElements();
 
-    // Child-list mutations still need the existing orphan/duplicate cleanup.
     if (!mutations.some((mutation) => mutation.type === 'childList') || reconcileQueued) return;
     reconcileQueued = true;
     window.queueMicrotask(() => {
