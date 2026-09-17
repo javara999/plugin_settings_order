@@ -84,8 +84,10 @@
 
   let active = false;
   let draggedCard = null;
-  let saveTimer = null;
   let saveBusy = false;
+  let saveQueued = false;
+  let saveScheduled = false;
+  let lastSavedState = null;
   let wasDragging = false;
   let hiddenToolbar = null;
   let listenersBound = false;
@@ -188,6 +190,16 @@
     );
   };
 
+  const configSnapshot = () => {
+    writeConfigInputs();
+    return {
+      PLUGIN_ORDER: orderInput.value,
+      HIDDEN_PLUGINS: hiddenInput.value,
+    };
+  };
+
+  const snapshotKey = (snapshot) => JSON.stringify(snapshot);
+
   const ensureToolbar = () => {
     container.querySelectorAll('[data-pso-hidden-toolbar]').forEach((toolbar) => toolbar.remove());
     hiddenToolbar = document.createElement('div');
@@ -262,48 +274,89 @@
     renderHiddenToolbar();
   };
 
-  const saveOrder = () => {
-    if (!active) return;
-    writeConfigInputs();
-    if (saveTimer) window.clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => {
-      saveTimer = null;
-      if (!active) return;
-      if (typeof form.requestSubmit === 'function') form.requestSubmit();
-      else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    }, 120);
+  const getConfigFetch = () => (
+    typeof window.__origFetchForPluginsViewer === 'function'
+      ? window.__origFetchForPluginsViewer.bind(window)
+      : window.fetch.bind(window)
+  );
+
+  const persistConfig = async (snapshot) => {
+    const response = await getConfigFetch()('/api/media/metadata/plugins/save-config', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'general',
+        plugin_id: pluginId,
+        config: snapshot,
+      }),
+    });
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (_) {}
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.error || `플러그인 설정 저장에 실패했습니다. (HTTP ${response.status})`);
+    }
+    return payload;
   };
 
-  const onSubmit = async (event) => {
+  // 이동/숨김 직후 최신 상태를 저장한다. 저장 중 추가 변경이 발생하면 saveQueued가
+  // 다시 켜지고, 현재 요청이 끝난 직후 가장 최신 스냅샷을 한 번 더 저장한다.
+  // 따라서 빠른 연속 드래그/숨김에서도 마지막 상태가 유실되지 않는다.
+  const drainSaveQueue = async () => {
+    if (saveBusy || !saveQueued) return;
+    saveBusy = true;
+    let lastPayload = null;
+    try {
+      while (saveQueued) {
+        saveQueued = false;
+        const snapshot = configSnapshot();
+        const key = snapshotKey(snapshot);
+        if (key === lastSavedState) continue;
+        try {
+          lastPayload = await persistConfig(snapshot);
+          lastSavedState = key;
+        } catch (error) {
+          console.error('[PluginSettingsOrder] 설정 저장 실패:', error);
+          if (typeof window.showToast === 'function') {
+            window.showToast(error.message || '플러그인 설정 저장에 실패했습니다.', 'error');
+          }
+          return;
+        }
+      }
+      if (lastPayload && typeof window.showToast === 'function') {
+        window.showToast(lastPayload.message || '플러그인 설정을 저장했습니다.', 'success');
+      }
+    } finally {
+      saveBusy = false;
+      if (saveQueued && !saveScheduled) {
+        saveScheduled = true;
+        window.queueMicrotask(() => {
+          saveScheduled = false;
+          void drainSaveQueue();
+        });
+      }
+    }
+  };
+
+  const saveOrder = () => {
+    if (!active) return;
+    configSnapshot();
+    saveQueued = true;
+    if (saveBusy || saveScheduled) return;
+    saveScheduled = true;
+    window.queueMicrotask(() => {
+      saveScheduled = false;
+      void drainSaveQueue();
+    });
+  };
+
+  const onSubmit = (event) => {
     if (!active) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (saveBusy) return;
-    saveBusy = true;
-    writeConfigInputs();
-    try {
-      const fetchConfig = typeof window.__origFetchForPluginsViewer === 'function'
-        ? window.__origFetchForPluginsViewer.bind(window)
-        : window.fetch.bind(window);
-      const response = await fetchConfig('/api/media/metadata/plugins/save-config', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'general',
-          plugin_id: pluginId,
-          config: { PLUGIN_ORDER: orderInput.value, HIDDEN_PLUGINS: hiddenInput.value },
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok || payload.success === false) throw new Error(payload.error || '플러그인 설정 저장에 실패했습니다.');
-      if (typeof window.showToast === 'function') window.showToast(payload.message || '플러그인 설정을 저장했습니다.', 'success');
-    } catch (error) {
-      console.error('[PluginSettingsOrder] 설정 저장 실패:', error);
-      if (typeof window.showToast === 'function') window.showToast(error.message || '플러그인 설정 저장에 실패했습니다.', 'error');
-    } finally {
-      saveBusy = false;
-    }
+    saveOrder();
   };
 
   const clearDragState = () => getCards().forEach(({ card }) => card.classList.remove('pso-dragging', 'pso-drop-target'));
@@ -408,8 +461,6 @@
     active = false;
     draggedCard = null;
     wasDragging = false;
-    if (saveTimer) window.clearTimeout(saveTimer);
-    saveTimer = null;
     unbindListeners();
     if (hiddenToolbar) hiddenToolbar.remove();
     hiddenToolbar = null;
